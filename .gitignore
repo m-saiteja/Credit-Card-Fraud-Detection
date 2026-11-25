@@ -221,3 +221,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project specifics
+data/
+.DS_Store
+models/*.joblib
+models/*.pkl
+
+# MLFlow
+mlruns/
+mlartifacts/
+mlflow.db
