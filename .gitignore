@@ -227,6 +227,8 @@ data/
 .DS_Store
 models/*.joblib
 models/*.pkl
+logs/
+models/champion/
 
 # MLFlow
 mlruns/

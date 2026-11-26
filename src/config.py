@@ -1,5 +1,5 @@
-from pathlib import Path
 import logging
+from pathlib import Path
 
 # PATHS
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,6 +27,11 @@ MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT}/mlflow.db"
 EXPERIMENT_NAME = "credit-card-fraud-detection"
 REGISTERED_MODEL_NAME = "credit-card-fraud-classifier"
 CHAMPION_ALIAS = "champion"
+
+# DRIFT
+DRIFT_EXPERIMENT_NAME = "credit-card-fraud-monitoring"
+# from our EDA
+MONITOR_FEATURES = ["V17", "V14", "V12", "V10", "V11", "V4", AMOUNT_COL]
 
 
 def setup_logger(name: str) -> logging.Logger:
