@@ -111,7 +111,7 @@ def train_and_log_run(
             "beta": beta,
             **{f"clf_{k}": v for k, v in classifier.get_params().items()},
         })
-
+        logger.info(f'Training {model_name} with params: {classifier.get_params()}')
         if tune and model_name in PARAM_GRIDS:
             if split_strategy == 'stratified':
                 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)

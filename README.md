@@ -26,14 +26,14 @@ Credit-Card-Fraud-Detection/
 │   ├── monitor.py          # Appends prediction logs (JSONL) and computes live stats
 │   └── schemas.py          # Pydantic request/response schemas (Time, Amount, V1..V28)
 ├── data/
-│   ├── raw/                # creditcard.csv (git-ignored)
-│   └── processed/          # train.csv, val.csv, test.csv (git-ignored)
+│   ├── raw/                # creditcard.csv
+│   └── processed/          # train.csv, val.csv, test.csv
 ├── models/
-│   └── champion/           # Exported @champion model & metadata.json for Docker (git-ignored)
+│   └── champion/           # Exported @champion model & metadata.json for Docker
 ├── notebooks/
 │   └── 01_eda.ipynb        # Exploratory data analysis
 ├── src/
-│   ├── config.py           # Paths, schema constants, split & MLflow settings
+│   ├── config.py           # Paths, schema constants, split, MLflow & PARAM_GRIDS settings
 │   ├── data.py             # Ingestion, validation, deduplication, stratified/time splits
 │   ├── features.py         # ColumnTransformer preprocessing factory
 │   ├── evaluate.py         # Threshold tuning (F-beta) and PR/ROC/confusion metrics & plots
@@ -51,7 +51,19 @@ Credit-Card-Fraud-Detection/
 
 ---
 
-## Baseline Results (`stratified` split, `robust` scaler, untuned)
+## Model Results
+
+### Tuned Models (`time` split, `log_standard` scaler, `use_cyclical_time=True`, `GridSearchCV`)
+
+| Model | CV PR-AUC | Val PR-AUC | Test PR-AUC | Test Precision | Test Recall | Test F1 | Tuned Threshold | Best Params |
+|---|---|---|---|---|---|---|---|---|
+| **XGBoost** (`@champion` v16) | **0.8002** | **0.7814** | 0.7831 | 0.9123 | 0.7027 | 0.7939 | `0.7018` | `max_depth=3, lr=0.05, n_estimators=300` |
+| **LightGBM** | 0.7960 | 0.7809 | 0.7981 | 0.9310 | **0.7297** | **0.8182** | `0.9947` | `num_leaves=63, lr=0.1, n_estimators=300` |
+| Random Forest | 0.7972 | 0.7512 | **0.8044** | 0.8710 | **0.7297** | 0.7941 | `0.4533` | `max_depth=10, n_estimators=200` |
+| Logistic Regression | 0.7183 | 0.7495 | 0.7332 | 0.9245 | 0.6622 | 0.7717 | `1.0000` | `C=0.1` |
+| HistGradientBoosting | 0.7372 | 0.7383 | 0.7647 | **0.9400** | 0.6351 | 0.7581 | `0.9747` | `max_depth=4, lr=0.1` |
+
+### Baseline Results (`stratified` split, `robust` scaler, untuned)
 
 | Model | Val PR-AUC | Test PR-AUC | Test Precision | Test Recall | Test F1 | Tuned Threshold |
 |---|---|---|---|---|---|---|
@@ -94,6 +106,17 @@ uv run python -m src.train --tune --promote
 # Launch MLflow UI (http://127.0.0.1:5000)
 uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
+
+**Training CLI Options (`src/train.py`):**
+
+| Flag | Options / Default | Description |
+|---|---|---|
+| `--models` | `rf hgb logreg xgb lgbm` | Space-separated list of models to train |
+| `--split-strategy` | `stratified` \| `time` (default: `stratified`) | Train/val/test split strategy |
+| `--amount-scaler` | `robust` \| `log_standard` (default: `robust`) | Scaler used on `Amount` in `ColumnTransformer` |
+| `--use-cyclical-time` | flag (default: `False`) | Encode `Time` as 24h `(sin, cos)` instead of dropping |
+| `--tune` | flag (default: `False`) | Run 5-fold `GridSearchCV` using `PARAM_GRIDS` in `src/config.py` |
+| `--promote` | flag (default: `False`) | Promote the highest `val_pr_auc` model to `@champion` |
 
 ### 4. Export `@champion` & Run the FastAPI Service Locally
 ```bash
