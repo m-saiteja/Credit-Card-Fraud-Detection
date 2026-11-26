@@ -1,9 +1,12 @@
 import argparse
 import matplotlib.pyplot as plt
 
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, TimeSeriesSplit
 
 import mlflow
 from mlflow.models import infer_signature
@@ -26,14 +29,15 @@ from src.config import (
     SPLIT_STRATEGY,
     VALID_SPLIT_STRATEGIES,
     MLFLOW_TRACKING_URI,
-    EXPERIMENT_NAME
+    EXPERIMENT_NAME,
+    PARAM_GRIDS
 )
 
 
 logger = setup_logger(__name__)
 
 
-def map_model_name(model_name: str, random_state=RANDOM_STATE):
+def map_model_name(model_name: str, scale_pos_weight: float = 1.0, random_state=RANDOM_STATE):
     models = {
         "logreg": LogisticRegression(
             max_iter=1000,
@@ -51,12 +55,23 @@ def map_model_name(model_name: str, random_state=RANDOM_STATE):
             class_weight="balanced",
             max_iter=200,
             random_state=random_state,
+        ),
+        "xgb": XGBClassifier(
+            scale_pos_weight=scale_pos_weight,
+            eval_metric="aucpr",
+            random_state=random_state,
+            n_jobs=-1
+        ),
+        "lgbm": LGBMClassifier(
+            class_weight="balanced",
+            verbosity=-1,
+            n_jobs=-1,
+            random_state=random_state,
         )
     }
     if model_name in models:
         return models[model_name]
-    else:
-        raise ValueError(f"Unknown model: {model_name}")
+    raise ValueError(f"Unknown model: {model_name}")
 
 
 def train_and_log_run(
@@ -67,7 +82,8 @@ def train_and_log_run(
     split_strategy,
     amount_scaler,
     use_cyclical_time,
-    beta=1.0
+    beta=1.0,
+    tune: bool = False
 ):
     X_train = train_df[FEATURE_COLS]
     y_train = train_df[TARGET_COL]
@@ -95,12 +111,31 @@ def train_and_log_run(
             "beta": beta,
             **{f"clf_{k}": v for k, v in classifier.get_params().items()},
         })
-    
-        pipeline.fit(X_train, y_train)
+
+        if tune and model_name in PARAM_GRIDS:
+            if split_strategy == 'stratified':
+                cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+            else:
+                cv = TimeSeriesSplit(n_splits=5)
+            search = GridSearchCV(
+                pipeline,
+                PARAM_GRIDS[model_name],
+                scoring="average_precision",
+                cv=cv,
+                n_jobs=-1
+            )
+            search.fit(X_train, y_train)
+            fitted_pipeline = search.best_estimator_
+            mlflow.log_params({f'best_{k}': v for k, v in search.best_params_.items()})
+            mlflow.log_metric("cv_best_pr_auc", float(search.best_score_))
+        else:
+            pipeline.fit(X_train, y_train)
+            fitted_pipeline = pipeline
+
 
         # tune the params using validation set
         logger.info('Tuning threshold on validation set...')
-        val_proba = pipeline.predict_proba(X_val)[:, 1]
+        val_proba = fitted_pipeline.predict_proba(X_val)[:, 1]
         best_threshold, best_score = find_best_threshold(y_val, val_proba, beta)
         val_metrics = compute_metrics(y_val, val_proba, best_threshold)
         mlflow.log_metrics({
@@ -111,7 +146,7 @@ def train_and_log_run(
 
         # evaluate on the test set only once
         logger.info('Evaluating on the test set once...')
-        test_proba = pipeline.predict_proba(X_test)[:, 1]
+        test_proba = fitted_pipeline.predict_proba(X_test)[:, 1]
         test_metrics = compute_metrics(y_test, test_proba, best_threshold)
         mlflow.log_metrics({
             f'test_{k}': v for k, v in test_metrics.items()
@@ -135,20 +170,28 @@ def train_and_log_run(
 
         mlflow.log_dict({'threshold': best_threshold}, 'threshold.json')
 
+        log_kwargs = (
+            {"serialization_format": "cloudpickle"}
+            if model_name in ("xgb", "lgbm")
+            else {
+                "skops_trusted_types": [
+                    "sklearn.tree._tree.Tree",
+                    "sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor",
+                    "src.features.encode_cyclical_time",
+                    "src.features.cyclical_time_name",
+                ]
+            }
+        )
+
         sample = X_train.head(5)
-        signature = infer_signature(sample, pipeline.predict_proba(sample))
+        signature = infer_signature(sample, fitted_pipeline.predict_proba(sample))
         model_info = mlflow.sklearn.log_model(
-            sk_model=pipeline,
+            sk_model=fitted_pipeline,
             name="model",
             signature=signature,
             input_example=sample,
             registered_model_name=REGISTERED_MODEL_NAME,
-            skops_trusted_types=[
-                "sklearn.tree._tree.Tree",
-                "sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor",
-                "src.features.encode_cyclical_time",
-                "src.features.cyclical_time_name",
-            ],
+            **log_kwargs,
         )
         return {
             "run_id": run.info.run_id,
@@ -189,7 +232,16 @@ def main():
     parser.add_argument(
         '--models',
         nargs='+',
-        default=['rf', 'hgb', 'logreg']
+        default=['rf', 'hgb', 'logreg', 'xgb', 'lgbm']
+    )
+    parser.add_argument(
+        "--tune",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="promote best model to champion"
     )
     args = parser.parse_args()
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -201,20 +253,23 @@ def main():
     model_results = []
     for model in args.models:
         result = train_and_log_run(
-            model,
-            train_df,
-            val_df,
-            test_df,
-            args.split_strategy,
-            args.amount_scaler,
-            args.use_cyclical_time
+            model_name=model,
+            train_df=train_df,
+            val_df=val_df,
+            test_df=test_df,
+            split_strategy=args.split_strategy,
+            amount_scaler=args.amount_scaler,
+            use_cyclical_time=args.use_cyclical_time,
+            tune=args.tune
         )
         model_results.append(result)
 
     winner = max(model_results, key=lambda x: x['val_pr_auc'])
     logger.info(f"Winner: {winner['model_name']} v{winner['version']}")
-    
-    promote_champion_model(REGISTERED_MODEL_NAME, winner['version'])
+    if args.promote:
+        promote_champion_model(REGISTERED_MODEL_NAME, winner['version'])
+    else:
+        logger.info('Skipping @champion promotion. Use --promote to update @champion')
 
 
 if __name__ == "__main__":

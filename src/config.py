@@ -33,6 +33,23 @@ DRIFT_EXPERIMENT_NAME = "credit-card-fraud-monitoring"
 # from our EDA
 MONITOR_FEATURES = ["V17", "V14", "V12", "V10", "V11", "V4", AMOUNT_COL]
 
+# Hyperparameter tuning
+PARAM_GRIDS = {
+    "logreg": {"classifier__C": [0.1, 1.0, 10.0]},
+    "rf": {"classifier__max_depth": [10, 14], "classifier__n_estimators": [100, 200]},
+    "hgb": {"classifier__max_depth": [4, 8], "classifier__learning_rate": [0.05, 0.1]},
+    "xgb": {
+        "classifier__max_depth": [3, 6],
+        "classifier__learning_rate": [0.05, 0.1],
+        "classifier__n_estimators": [150, 300],
+    },
+    "lgbm": {
+        "classifier__num_leaves": [31, 63],
+        "classifier__learning_rate": [0.05, 0.1],
+        "classifier__n_estimators": [150, 300],
+    },
+}
+
 
 def setup_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
